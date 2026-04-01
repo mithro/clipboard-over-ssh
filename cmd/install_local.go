@@ -14,7 +14,7 @@ const socketUnit = `[Unit]
 Description=Clipboard-over-SSH socket
 
 [Socket]
-ListenStream=%t/clipboard-over-ssh.sock
+ListenStream=%h/.ssh/clipboard-over-ssh.sock
 Accept=yes
 SocketMode=0600
 
@@ -100,17 +100,11 @@ func RunInstallLocal() int {
 	}
 
 	// Print status
-	xdg := os.Getenv("XDG_RUNTIME_DIR")
-	if xdg == "" {
-		xdg = fmt.Sprintf("/run/user/%d", os.Getuid())
-	}
-	localSock := filepath.Join(xdg, "clipboard-over-ssh.sock")
-
 	fmt.Println("\nInstalled successfully. Socket is active.")
 	fmt.Println("\nAdd this to your ~/.ssh/config for remote hosts:")
 	fmt.Println()
 	fmt.Println("    Host <hostname-pattern>")
-	fmt.Printf("        RemoteForward ${HOME}/.ssh/clipboard.sock %s\n", localSock)
+	fmt.Println("        RemoteForward ${HOME}/.ssh/clipboard.sock ${HOME}/.ssh/clipboard-over-ssh.sock")
 	fmt.Println("        StreamLocalBindUnlink yes")
 	fmt.Println()
 	fmt.Println("${HOME} is expanded by SSH on the client side. This works when the")

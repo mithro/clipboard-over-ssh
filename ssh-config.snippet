@@ -2,10 +2,10 @@
 #
 # ${HOME} is expanded by SSH on the client side. This works when the
 # remote home directory path matches the local one (e.g. both /home/tim).
-# The socket lives alongside SSH mux sockets under ~/.ssh/.
+# Both sockets live alongside SSH mux sockets under ~/.ssh/.
 #
 # StreamLocalBindUnlink removes stale sockets from previous sessions.
 
 Host *.example.com
-    RemoteForward ${HOME}/.ssh/clipboard.sock /run/user/1000/clipboard-over-ssh.sock
+    RemoteForward ${HOME}/.ssh/clipboard.sock ${HOME}/.ssh/clipboard-over-ssh.sock
     StreamLocalBindUnlink yes
