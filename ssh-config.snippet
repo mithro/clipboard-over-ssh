@@ -1,0 +1,10 @@
+# Add these lines to ~/.ssh/config for each remote host where you want
+# clipboard forwarding. Adjust paths if the remote UID is not 1000.
+#
+# For hosts where UID differs, replace /run/user/1000/ with the correct
+# XDG_RUNTIME_DIR path for that user, or use ${HOME}/.clipboard.sock
+# as an alternative (SSH expands ${HOME} for Unix socket paths).
+
+Host myremote
+    RemoteForward /run/user/1000/clipboard.sock /run/user/1000/clipboard-over-ssh.sock
+    StreamLocalBindUnlink yes
