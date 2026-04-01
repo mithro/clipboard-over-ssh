@@ -107,13 +107,14 @@ func RunInstallLocal() int {
 	localSock := filepath.Join(xdg, "clipboard-over-ssh.sock")
 
 	fmt.Println("\nInstalled successfully. Socket is active.")
-	fmt.Println("\nAdd this to your ~/.ssh/config for each remote host:")
+	fmt.Println("\nAdd this to your ~/.ssh/config for remote hosts:")
 	fmt.Println()
-	fmt.Println("    Host <hostname>")
-	fmt.Printf("        RemoteForward /run/user/<REMOTE_UID>/clipboard.sock %s\n", localSock)
+	fmt.Println("    Host <hostname-pattern>")
+	fmt.Printf("        RemoteForward ${HOME}/.ssh/clipboard.sock %s\n", localSock)
 	fmt.Println("        StreamLocalBindUnlink yes")
 	fmt.Println()
-	fmt.Println("Replace <REMOTE_UID> with the remote user's UID (check with 'id -u').")
+	fmt.Println("${HOME} is expanded by SSH on the client side. This works when the")
+	fmt.Println("remote home directory path matches the local one (e.g. both /home/tim).")
 
 	return 0
 }

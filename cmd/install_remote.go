@@ -12,7 +12,7 @@ import (
 
 const bashrcMarker = "# clipboard-over-ssh"
 const bashrcSnippet = `# clipboard-over-ssh
-export CLIPBOARD_SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/clipboard.sock"
+export CLIPBOARD_SOCK="$HOME/.ssh/clipboard.sock"
 export PATH="$HOME/.local/bin/clipboard-shims:$PATH"
 `
 
