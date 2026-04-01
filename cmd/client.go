@@ -21,7 +21,7 @@ import (
 // If the socket is unavailable or the invocation doesn't match a
 // clipboard read operation, it falls through to the real binary.
 func RunClient(invocationName string, args []string) int {
-	target, shouldHandle := parseClientArgs(invocationName, args)
+	req, shouldHandle := parseClientArgs(invocationName, args)
 	if !shouldHandle {
 		return fallThrough(invocationName, args)
 	}
@@ -49,7 +49,7 @@ func RunClient(invocationName string, args []string) int {
 	defer conn.Close()
 
 	// Send request
-	if _, err := fmt.Fprintf(conn, "%s\n", target); err != nil {
+	if _, err := fmt.Fprintf(conn, "%s\n", req.target); err != nil {
 		fmt.Fprintf(os.Stderr, "clipboard-over-ssh: writing request: %v\n", err)
 		return 1
 	}
@@ -71,8 +71,16 @@ func RunClient(invocationName string, args []string) int {
 		return 1
 	}
 
+	data := resp.Data
+
+	// wl-paste --list-types only shows MIME types (entries containing '/'),
+	// filtering out X11 atoms like TARGETS, TIMESTAMP, STRING, etc.
+	if req.filterX11Atoms {
+		data = filterX11Atoms(data)
+	}
+
 	// Write raw data to stdout (no protocol header)
-	if _, err := os.Stdout.Write(resp.Data); err != nil {
+	if _, err := os.Stdout.Write(data); err != nil {
 		fmt.Fprintf(os.Stderr, "clipboard-over-ssh: writing output: %v\n", err)
 		return 1
 	}
@@ -80,19 +88,26 @@ func RunClient(invocationName string, args []string) int {
 	return 0
 }
 
+type clientRequest struct {
+	target       string
+	filterX11Atoms bool // when true, filter TARGETS output to only MIME types (for wl-paste --list-types)
+}
+
 // parseClientArgs extracts the clipboard target from xclip/wl-paste arguments.
-// Returns the target string and whether this invocation should be handled
+// Returns the request and whether this invocation should be handled
 // (vs. falling through to the real binary).
-func parseClientArgs(invocationName string, args []string) (string, bool) {
+func parseClientArgs(invocationName string, args []string) (clientRequest, bool) {
 	switch invocationName {
 	case "xclip":
-		return parseXclipArgs(args)
+		target, ok := parseXclipArgs(args)
+		return clientRequest{target: target}, ok
 	case "wl-paste":
 		return parseWlPasteArgs(args)
 	case "clipboard-over-ssh":
-		return parseDirectArgs(args)
+		target, ok := parseDirectArgs(args)
+		return clientRequest{target: target}, ok
 	default:
-		return "", false
+		return clientRequest{}, false
 	}
 }
 
@@ -132,13 +147,13 @@ func parseXclipArgs(args []string) (string, bool) {
 }
 
 // parseWlPasteArgs handles: wl-paste --type <target> or wl-paste --list-types
-func parseWlPasteArgs(args []string) (string, bool) {
+func parseWlPasteArgs(args []string) (clientRequest, bool) {
 	var target string
 
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--list-types":
-			return "TARGETS", true
+			return clientRequest{target: "TARGETS", filterX11Atoms: true}, true
 		case args[i] == "--type" && i+1 < len(args):
 			i++
 			target = args[i]
@@ -148,10 +163,10 @@ func parseWlPasteArgs(args []string) (string, bool) {
 	}
 
 	if target != "" {
-		return target, true
+		return clientRequest{target: target}, true
 	}
 
-	return "", false
+	return clientRequest{}, false
 }
 
 // parseDirectArgs handles: clipboard-over-ssh client --target <target>
@@ -166,6 +181,27 @@ func parseDirectArgs(args []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// x11SelectionAtoms are X11 selection metadata atoms that xclip includes in
+// TARGETS output but wl-paste --list-types omits. These are not real clipboard
+// content types.
+var x11SelectionAtoms = map[string]bool{
+	"TARGETS":   true,
+	"TIMESTAMP": true,
+}
+
+// filterX11Atoms removes X11 selection metadata atoms from a newline-separated
+// list of clipboard targets. This matches the behavior of wl-paste --list-types
+// which only returns actual content types, not X11 selection metadata.
+func filterX11Atoms(data []byte) []byte {
+	var result []byte
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" && !x11SelectionAtoms[line] {
+			result = append(result, []byte(line+"\n")...)
+		}
+	}
+	return result
 }
 
 // fallThrough finds and executes the real binary, searching PATH entries
