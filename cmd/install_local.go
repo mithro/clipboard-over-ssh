@@ -100,14 +100,20 @@ func RunInstallLocal() int {
 	}
 
 	// Print status
+	xdg := os.Getenv("XDG_RUNTIME_DIR")
+	if xdg == "" {
+		xdg = fmt.Sprintf("/run/user/%d", os.Getuid())
+	}
+	localSock := filepath.Join(xdg, "clipboard-over-ssh.sock")
+
 	fmt.Println("\nInstalled successfully. Socket is active.")
 	fmt.Println("\nAdd this to your ~/.ssh/config for each remote host:")
 	fmt.Println()
 	fmt.Println("    Host <hostname>")
-	fmt.Println("        RemoteForward /run/user/1000/clipboard.sock /run/user/1000/clipboard-over-ssh.sock")
+	fmt.Printf("        RemoteForward /run/user/<REMOTE_UID>/clipboard.sock %s\n", localSock)
 	fmt.Println("        StreamLocalBindUnlink yes")
 	fmt.Println()
-	fmt.Println("Adjust /run/user/1000/ if the remote UID is not 1000.")
+	fmt.Println("Replace <REMOTE_UID> with the remote user's UID (check with 'id -u').")
 
 	return 0
 }
