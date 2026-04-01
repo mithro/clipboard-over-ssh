@@ -28,6 +28,13 @@ func RunClient(invocationName string, args []string) int {
 
 	sockPath := os.Getenv("CLIPBOARD_SOCK")
 	if sockPath == "" {
+		// Default: check ~/.ssh/clipboard.sock (same path as SSH RemoteForward target)
+		home, err := os.UserHomeDir()
+		if err == nil {
+			sockPath = filepath.Join(home, ".ssh", "clipboard.sock")
+		}
+	}
+	if sockPath == "" {
 		return fallThrough(invocationName, args)
 	}
 

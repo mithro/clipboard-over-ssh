@@ -7,17 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
-const bashrcMarker = "# clipboard-over-ssh"
-const bashrcSnippet = `# clipboard-over-ssh
-export CLIPBOARD_SOCK="$HOME/.ssh/clipboard.sock"
-export PATH="$HOME/.local/bin/clipboard-shims:$PATH"
-`
-
-// RunInstallRemote sets up the clipboard shim directory and shell config
-// on a remote machine. Run this after copying the binary to the remote.
+// RunInstallRemote installs the clipboard-over-ssh binary and xclip/wl-paste
+// symlinks into ~/.local/bin/. Since ~/.local/bin is typically already in PATH,
+// no shell config changes are needed.
 func RunInstallRemote() int {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -25,12 +19,11 @@ func RunInstallRemote() int {
 		return 1
 	}
 
-	shimDir := filepath.Join(home, ".local", "bin", "clipboard-shims")
-	if err := os.MkdirAll(shimDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "clipboard-over-ssh install-remote: creating shim directory: %v\n", err)
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "clipboard-over-ssh install-remote: creating directory: %v\n", err)
 		return 1
 	}
-	fmt.Printf("Created %s\n", shimDir)
 
 	// Determine our binary path
 	binPath, err := os.Executable()
@@ -44,26 +37,33 @@ func RunInstallRemote() int {
 		return 1
 	}
 
-	// Copy binary into shim directory if not already there
-	shimBin := filepath.Join(shimDir, "clipboard-over-ssh")
-	if binPath != shimBin {
+	// Copy binary into ~/.local/bin if not already there
+	destBin := filepath.Join(binDir, "clipboard-over-ssh")
+	if binPath != destBin {
 		data, err := os.ReadFile(binPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "clipboard-over-ssh install-remote: reading binary: %v\n", err)
 			return 1
 		}
-		if err := os.WriteFile(shimBin, data, 0755); err != nil {
+		if err := os.WriteFile(destBin, data, 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "clipboard-over-ssh install-remote: copying binary: %v\n", err)
 			return 1
 		}
-		fmt.Printf("Copied binary to %s\n", shimBin)
+		fmt.Printf("Copied binary to %s\n", destBin)
 	}
 
 	// Create symlinks for xclip and wl-paste
 	for _, name := range []string{"xclip", "wl-paste"} {
-		link := filepath.Join(shimDir, name)
-		// Remove existing symlink if present
-		os.Remove(link)
+		link := filepath.Join(binDir, name)
+		// Remove existing symlink if present (but don't remove real binaries)
+		if info, err := os.Lstat(link); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				os.Remove(link)
+			} else {
+				fmt.Fprintf(os.Stderr, "clipboard-over-ssh install-remote: %s exists and is not a symlink, skipping\n", link)
+				continue
+			}
+		}
 		if err := os.Symlink("clipboard-over-ssh", link); err != nil {
 			fmt.Fprintf(os.Stderr, "clipboard-over-ssh install-remote: creating %s symlink: %v\n", name, err)
 			return 1
@@ -71,46 +71,9 @@ func RunInstallRemote() int {
 		fmt.Printf("Created symlink %s -> clipboard-over-ssh\n", link)
 	}
 
-	// Update .bashrc if needed
-	bashrcPath := filepath.Join(home, ".bashrc")
-	if err := updateBashrc(bashrcPath); err != nil {
-		fmt.Fprintf(os.Stderr, "clipboard-over-ssh install-remote: updating .bashrc: %v\n", err)
-		return 1
-	}
-
 	fmt.Println("\nInstalled successfully.")
-	fmt.Println("Run 'source ~/.bashrc' or reconnect to activate.")
+	fmt.Printf("Ensure %s is in your PATH.\n", binDir)
+	fmt.Println("The clipboard socket defaults to ~/.ssh/clipboard.sock (no env var needed).")
 
 	return 0
-}
-
-func updateBashrc(path string) error {
-	content, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
-	if strings.Contains(string(content), bashrcMarker) {
-		fmt.Printf("%s already configured, skipping\n", path)
-		return nil
-	}
-
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	if len(content) > 0 && !strings.HasSuffix(string(content), "\n") {
-		if _, err := f.WriteString("\n"); err != nil {
-			return err
-		}
-	}
-
-	if _, err := f.WriteString("\n" + bashrcSnippet); err != nil {
-		return err
-	}
-
-	fmt.Printf("Updated %s\n", path)
-	return nil
 }
