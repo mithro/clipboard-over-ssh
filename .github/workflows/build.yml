@@ -42,3 +42,42 @@ jobs:
         with:
           name: clipboard-over-ssh-${{ matrix.goos }}-${{ matrix.goarch }}
           path: clipboard-over-ssh-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(git describe --tags --always --match 'v*')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=release-$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          # Flatten artifacts from per-architecture directories
+          mkdir -p release
+          cp artifacts/*/* release/
+          # Remove previous release for this version if re-running
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" \
+            --title "$VERSION" \
+            --target "${{ github.sha }}" \
+            --generate-notes \
+            release/*
