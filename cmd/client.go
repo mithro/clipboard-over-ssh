@@ -29,22 +29,32 @@ func RunClient(invocationName string, args []string) int {
 	}
 
 	sockPath := os.Getenv("CLIPBOARD_SOCK")
-	if sockPath == "" {
-		// Default: check ~/.ssh/clipboard.sock (same path as SSH RemoteForward target)
+	usingDefault := sockPath == ""
+
+	// sshDir is only needed for two things: building the default socket
+	// path, and best-effort Logf on fallthrough. A custom $CLIPBOARD_SOCK
+	// never needs a home directory to dial, so it must not be resolved
+	// (or required) on that path.
+	var sshDir string
+	if usingDefault {
+		// Default: check ~/.ssh/clipboard.sock (same path as SSH RemoteForward
+		// target). This is the one home-dir resolution on the default path,
+		// reused for both sockPath and sshDir. If $HOME is unset (cron,
+		// stripped env) there is no default socket to try — fall through
+		// loudly, never silently.
 		home, err := os.UserHomeDir()
-		if err == nil {
-			sockPath = filepath.Join(home, ".ssh", "clipboard.sock")
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"clipboard-over-ssh: cannot determine home directory (%v); falling back to real %s\n",
+				err, invocationName)
+			return fallThrough(invocationName, args)
 		}
-	}
-	if sockPath == "" {
-		return fallThrough(invocationName, args)
-	}
-
-	usingDefault := os.Getenv("CLIPBOARD_SOCK") == ""
-
-	sshDir, err := defaultSSHDir()
-	if err != nil {
-		return fallThrough(invocationName, args)
+		sshDir = filepath.Join(home, ".ssh")
+		sockPath = filepath.Join(sshDir, "clipboard.sock")
+	} else {
+		// Best-effort only, for the Logf call below. If it fails, skip the
+		// Logf but still make the request against $CLIPBOARD_SOCK.
+		sshDir, _ = defaultSSHDir()
 	}
 
 	resp, err := requestWithHeal(sshDir, sockPath, req.target, usingDefault)
@@ -52,7 +62,9 @@ func RunClient(invocationName string, args []string) int {
 		fmt.Fprintf(os.Stderr,
 			"clipboard-over-ssh: no live clipboard forward (%v); falling back to real %s\n",
 			err, invocationName)
-		forward.Logf(sshDir, "shim", "fallthrough for %s: %v", invocationName, err)
+		if sshDir != "" {
+			forward.Logf(sshDir, "shim", "fallthrough for %s: %v", invocationName, err)
+		}
 		return fallThrough(invocationName, args)
 	}
 

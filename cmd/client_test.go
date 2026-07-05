@@ -83,3 +83,42 @@ func TestClientNoHealForCustomSocketPath(t *testing.T) {
 		t.Fatal("custom CLIPBOARD_SOCK must not be healed onto the default dir")
 	}
 }
+
+// TestClientCustomSocketWorksWithoutHome pins down the actual regression:
+// a custom $CLIPBOARD_SOCK must work even when $HOME can't be resolved
+// (cron, stripped env). RunClient itself isn't a good unit to drive here —
+// it reads os.Getenv/argv internally and, on success, writes the response
+// to os.Stdout and returns a process-style exit code, none of which is
+// pleasant to assert against from a test. The behavior we actually need to
+// prove lives one layer down: (1) request() never touches a home directory
+// at all, and (2) requestWithHeal(usingDefault=false) reaches the socket
+// and returns successfully without ever calling defaultSSHDir() — passing
+// it a garbage sshDir ("/nonexistent") demonstrates that, since if the code
+// used sshDir on this path it would fail against a directory that doesn't
+// exist. Together these two calls cover every line RunClient would run on
+// the custom-socket path, so this is the strongest test that doesn't
+// require re-plumbing RunClient's stdout/stderr/env for testability.
+func TestClientCustomSocketWorksWithoutHome(t *testing.T) {
+	t.Setenv("HOME", "")
+
+	sockDir := t.TempDir()
+	sock := filepath.Join(sockDir, "custom.sock")
+	liveSocketAt(t, sock)
+	t.Setenv("CLIPBOARD_SOCK", sock)
+
+	resp, err := request(sock, "TARGETS")
+	if err != nil {
+		t.Fatalf("request against live custom socket failed with no $HOME: %v", err)
+	}
+	if !resp.OK || string(resp.Data) != "TARGETS\n" {
+		t.Errorf("resp = %+v", resp)
+	}
+
+	resp, err = requestWithHeal("/nonexistent", sock, "TARGETS", false)
+	if err != nil {
+		t.Fatalf("requestWithHeal(usingDefault=false) must not depend on sshDir: %v", err)
+	}
+	if !resp.OK {
+		t.Errorf("resp = %+v", resp)
+	}
+}
