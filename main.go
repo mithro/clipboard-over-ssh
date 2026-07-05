@@ -49,6 +49,10 @@ func run() int {
 		return cmd.RunInstallLocal()
 	case "install-remote":
 		return cmd.RunInstallRemote()
+	case "reconcile":
+		return cmd.RunReconcile(os.Args[2:])
+	case "status":
+		return cmd.RunStatus()
 	default:
 		fmt.Fprintf(os.Stderr, "clipboard-over-ssh: unknown command %q\n", os.Args[1])
 		printUsage()
@@ -64,6 +68,8 @@ Commands:
   client          Query clipboard via forwarded socket
   install-local   Install systemd socket activation units on the local machine
   install-remote  Set up xclip/wl-paste shims on a remote machine
+  reconcile       Adopt a live forwarded socket onto ~/.ssh/clipboard.sock (remote side)
+  status          One-line forward health for login shells (remote side)
 
 When invoked as 'xclip' or 'wl-paste' (via symlink), acts as a transparent
 clipboard shim that forwards requests over $CLIPBOARD_SOCK.`)
