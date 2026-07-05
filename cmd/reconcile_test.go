@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mithro/clipboard-over-ssh/protocol"
 )
@@ -86,6 +87,31 @@ func TestReconcileCmdAdoptFlag(t *testing.T) {
 	}
 }
 
+// undeadSocketAt starts a listener that accepts connections but never
+// answers them (half-open forward), mirroring forward.Probe's Undead case.
+// Probing it blocks for forward's own probeTimeout (2s).
+func undeadSocketAt(t *testing.T, path string) {
+	t.Helper()
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		var conns []net.Conn
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				for _, c := range conns {
+					c.Close()
+				}
+				return
+			}
+			conns = append(conns, conn)
+		}
+	}()
+}
+
 func TestStatusNoSSHConnectionIsSilent(t *testing.T) {
 	t.Setenv("SSH_CONNECTION", "")
 	var out bytes.Buffer
@@ -114,10 +140,46 @@ func TestStatusReportsOKWithOrigin(t *testing.T) {
 func TestStatusReportsNoForward(t *testing.T) {
 	t.Setenv("SSH_CONNECTION", "2404:e80::51 46070 2404:e80::1 22")
 	var out bytes.Buffer
-	if code := runStatus(mkSSHDir(t), &out); code != 0 {
+	start := time.Now()
+	code := runStatus(mkSSHDir(t), &out)
+	elapsed := time.Since(start)
+	if code != 0 {
 		t.Errorf("exit = %d, want 0 (status never fails the login shell)", code)
 	}
 	if out.String() != "clipboard: no live forward\n" {
 		t.Errorf("output = %q", out.String())
+	}
+	// The retry loop is bounded by wall clock (statusRetryBudget), not an
+	// attempt count; give it generous headroom over the budget but catch a
+	// regression to unbounded/attempt-count-only retrying.
+	if elapsed > 2*time.Second {
+		t.Errorf("runStatus took %v, want well under statusRetryBudget-based bound", elapsed)
+	}
+}
+
+// TestStatusStopsEarlyOnSlowReconcile covers the fleet-wide login-stall fix:
+// an undead socket makes a single Reconcile call block for forward's own
+// probe timeout (2s), far longer than statusRetryDelay. The retry loop must
+// treat that as "the race is already over" and stop after one attempt,
+// rather than compounding several such slow probes on top of each other
+// (the old attempt-counted loop could take 5 x 2s+ = ~11s in this scenario).
+func TestStatusStopsEarlyOnSlowReconcile(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "2404:e80::51 46070 2404:e80::1 22")
+	sshDir := mkSSHDir(t)
+	undeadSocketAt(t, filepath.Join(sshDir, "clipboard.d", "x1c.dead111.sock"))
+
+	var out bytes.Buffer
+	start := time.Now()
+	code := runStatus(sshDir, &out)
+	elapsed := time.Since(start)
+
+	if code != 0 {
+		t.Errorf("exit = %d, want 0", code)
+	}
+	if out.String() != "clipboard: no live forward\n" {
+		t.Errorf("output = %q", out.String())
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("runStatus took %v, want ~one slow reconcile call (<3s), not several stacked", elapsed)
 	}
 }

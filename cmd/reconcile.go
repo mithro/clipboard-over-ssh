@@ -15,12 +15,19 @@ import (
 	"github.com/mithro/clipboard-over-ssh/forward"
 )
 
-// statusRetries × statusRetryDelay ≈ 1s: a fresh login races the
-// connection's own backgrounded ensure-forward reconcile; retry briefly
-// before crying wolf.
+// statusRetryBudget bounds the retry loop by wall clock, not attempt count.
+// A fresh login races the connection's own backgrounded ensure-forward
+// reconcile; that race is normally over in well under a second, so 1.5s is
+// generous. Bounding by wall clock (rather than a fixed attempt count) keeps
+// this a bounded delay even when an undead socket makes each individual
+// Reconcile call slow: a probe against an undead forward blocks for
+// forward's own probeTimeout (2s), and 5 attempt-counted retries against
+// such a socket used to serialize into an ~11s login stall. See also the
+// per-call slow-reconcile check in runStatus below, which stops retrying
+// immediately once a single call already outran the race window.
 const (
-	statusRetries    = 4
-	statusRetryDelay = 250 * time.Millisecond
+	statusRetryBudget = 1500 * time.Millisecond
+	statusRetryDelay  = 250 * time.Millisecond
 )
 
 func defaultSSHDir() (string, error) {
@@ -88,8 +95,11 @@ func runStatus(sshDir string, out io.Writer) int {
 		return 0 // local desktop login: real clipboard, alarms are noise
 	}
 
-	for attempt := 0; ; attempt++ {
+	deadline := time.Now().Add(statusRetryBudget)
+	for attempt := 1; ; attempt++ {
+		start := time.Now()
 		res, err := forward.Reconcile(sshDir, "")
+		slow := time.Since(start) > statusRetryDelay
 		switch {
 		case errors.Is(err, forward.ErrBusy):
 			// another reconcile is running; treat like "not yet"
@@ -104,9 +114,14 @@ func runStatus(sshDir string, out io.Writer) int {
 			fmt.Fprintf(out, "clipboard: OK (via %s)\n", origin)
 			return 0
 		}
-		if attempt >= statusRetries {
+		// Stop as soon as either the wall-clock budget is spent, or this
+		// call alone already took longer than the race we're absorbing —
+		// a slow Reconcile (e.g. probing an undead socket) means the
+		// sub-second fresh-login race is long since over, so further
+		// retries would only add more of the same slow probes.
+		if slow || time.Now().After(deadline) {
 			fmt.Fprintln(out, "clipboard: no live forward")
-			forward.Logf(sshDir, "status", "no live forward after %d attempts", attempt+1)
+			forward.Logf(sshDir, "status", "no live forward after %d attempts", attempt)
 			return 0
 		}
 		time.Sleep(statusRetryDelay)
