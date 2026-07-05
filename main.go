@@ -51,6 +51,8 @@ func run() int {
 		return cmd.RunInstallRemote()
 	case "reconcile":
 		return cmd.RunReconcile(os.Args[2:])
+	case "ensure-forward":
+		return cmd.RunEnsureForward(os.Args[2:])
 	case "status":
 		return cmd.RunStatus()
 	default:
@@ -69,6 +71,7 @@ Commands:
   install-local   Install systemd socket activation units on the local machine
   install-remote  Set up xclip/wl-paste shims on a remote machine
   reconcile       Adopt a live forwarded socket onto ~/.ssh/clipboard.sock (remote side)
+  ensure-forward  LocalCommand hook: forward a unique clipboard socket (local side)
   status          One-line forward health for login shells (remote side)
 
 When invoked as 'xclip' or 'wl-paste' (via symlink), acts as a transparent
