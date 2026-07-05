@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mithro/clipboard-over-ssh/forward"
 )
@@ -20,6 +21,14 @@ import (
 // already structurally impossible (mux slaves and -O control ops never run
 // LocalCommand — verified 2026-07-05/06); this is belt-and-braces.
 const internalEnv = "CLIPBOARD_OVER_SSH_INTERNAL"
+
+// ensureForwardBudget bounds the entire RunEnsureForward call. ssh runs
+// LocalCommand synchronously as part of establishing every new session, so a
+// hang here (a wedged mux master, a stuck -O forward) doesn't just break one
+// clipboard forward — it blocks every new ssh connection to this host,
+// fleet-wide, until something intervenes. 10s is generous for a local
+// control-socket round trip plus a detached spawn.
+const ensureForwardBudget = 10 * time.Second
 
 type runner interface {
 	run(name string, args ...string) ([]byte, error)
@@ -82,6 +91,19 @@ func RunEnsureForward(args []string) int {
 	if os.Getenv(internalEnv) != "" {
 		return 0
 	}
+
+	// Watchdog: if anything below wedges (a hung -O forward, a hung mux
+	// master), this process must not hang the connection's session setup
+	// forever. os.Exit here reaps nothing extra — the detached reconcile
+	// child, already Setsid'd, has already reparented to init and survives
+	// on its own regardless of what happens to us.
+	time.AfterFunc(ensureForwardBudget, func() {
+		if sshDir, err := defaultSSHDir(); err == nil {
+			forward.Logf(sshDir, "ensure-forward", "budget exceeded (%s); aborting", ensureForwardBudget)
+		}
+		os.Exit(1)
+	})
+
 	if len(args) != 3 {
 		return 1 // no usage spam: stderr of every ssh would show it
 	}
