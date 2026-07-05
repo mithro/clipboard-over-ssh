@@ -257,6 +257,59 @@ func TestReconcileMigratesDeadLegacySocket(t *testing.T) {
 	}
 }
 
+func TestReconcileCreatesClipboardDir(t *testing.T) {
+	// First-run case: nothing has ever created clipboard.d/ on this host.
+	sshDir := t.TempDir()
+
+	res, err := Reconcile(sshDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.LiveName != "" || res.Cleaned != 0 {
+		t.Errorf("got %+v, want empty result", res)
+	}
+
+	d := filepath.Join(sshDir, "clipboard.d")
+	info, err := os.Stat(d)
+	if err != nil {
+		t.Fatalf("clipboard.d was not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("clipboard.d is not a directory")
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Errorf("clipboard.d mode = %o, want 0700", info.Mode().Perm())
+	}
+}
+
+func TestReconcileLeavesStrayFileAlone(t *testing.T) {
+	sshDir := mkSSHDir(t)
+	strayPath := filepath.Join(sshDir, "clipboard.sock")
+	if err := os.WriteFile(strayPath, []byte("precious"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	liveSocketAt(t, filepath.Join(sshDir, "clipboard.d", "x1c.aaa111.sock"))
+
+	if _, err := Reconcile(sshDir, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Lstat(strayPath)
+	if err != nil {
+		t.Fatalf("stray clipboard.sock was removed: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("stray file was replaced by a symlink")
+	}
+	contents, err := os.ReadFile(strayPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "precious" {
+		t.Errorf("contents = %q, want %q", contents, "precious")
+	}
+}
+
 func TestReconcileLockBusy(t *testing.T) {
 	sshDir := mkSSHDir(t)
 	lockPath := filepath.Join(sshDir, "clipboard.d", ".lock")

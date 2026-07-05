@@ -42,6 +42,14 @@ func Reconcile(sshDir, adopt string) (Result, error) {
 }
 
 func reconcileWithLockTimeout(sshDir, adopt string, timeout time.Duration) (Result, error) {
+	// First-run case: on a fresh host nothing has ever created clipboard.d/
+	// yet. Reconcile owns this directory, so create it here rather than
+	// erroring — every caller (shim heal, status, remote reconcile --adopt)
+	// becomes self-bootstrapping.
+	if err := os.MkdirAll(filepath.Join(sshDir, "clipboard.d"), 0700); err != nil {
+		return Result{}, err
+	}
+
 	lockPath := filepath.Join(sshDir, "clipboard.d", ".lock")
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
@@ -133,15 +141,23 @@ func reconcileLocked(sshDir, adopt string) (Result, error) {
 	// Legacy migration (mixed-version rollout safety): a regular socket
 	// file is the OLD scheme's forward. If it still answers, keep it — a
 	// mid-rollout fleet must not lose its working forward. Replace it with
-	// the symlink only once it is provably dead.
+	// the symlink only once it is provably dead. Removal requires an actual
+	// dead socket — anything else (a stray non-socket regular file) is not
+	// ours to delete, so it is left alone and logged.
 	if info, err := os.Lstat(wellKnown); err == nil && info.Mode()&os.ModeSymlink == 0 {
-		if info.Mode()&os.ModeSocket != 0 && Probe(wellKnown, probeTimeout) == Live {
-			res.Legacy = true
-			Logf(sshDir, "reconcile", "live legacy clipboard.sock kept (cleaned=%d)", res.Cleaned)
+		if info.Mode()&os.ModeSocket != 0 {
+			if Probe(wellKnown, probeTimeout) == Live {
+				res.Legacy = true
+				Logf(sshDir, "reconcile", "live legacy clipboard.sock kept (cleaned=%d)", res.Cleaned)
+				return res, nil
+			}
+			if err := os.Remove(wellKnown); err != nil {
+				return res, err
+			}
+			Logf(sshDir, "reconcile", "removed dead legacy clipboard.sock")
+		} else {
+			Logf(sshDir, "reconcile", "clipboard.sock is not a socket or symlink; leaving it alone")
 			return res, nil
-		}
-		if err := os.Remove(wellKnown); err != nil {
-			return res, err
 		}
 	}
 
