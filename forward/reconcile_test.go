@@ -4,9 +4,11 @@
 package forward
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -171,5 +173,109 @@ func TestReconcileNeverTouchesNonSockFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Error("non-.sock file must never be unlinked")
+	}
+}
+
+func TestReconcileFlipsSymlink(t *testing.T) {
+	sshDir := mkSSHDir(t)
+	d := filepath.Join(sshDir, "clipboard.d")
+	liveSocketAt(t, filepath.Join(d, "x1c.aaa111.sock"))
+
+	if _, err := Reconcile(sshDir, ""); err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Readlink(filepath.Join(sshDir, "clipboard.sock"))
+	if err != nil {
+		t.Fatalf("clipboard.sock is not a symlink: %v", err)
+	}
+	if target != filepath.Join("clipboard.d", "x1c.aaa111.sock") {
+		t.Errorf("symlink -> %q, want clipboard.d/x1c.aaa111.sock", target)
+	}
+}
+
+func TestReconcileRepointsStaleSymlink(t *testing.T) {
+	sshDir := mkSSHDir(t)
+	d := filepath.Join(sshDir, "clipboard.d")
+	liveSocketAt(t, filepath.Join(d, "x1c.new222.sock"))
+	// Symlink points at a socket that no longer exists.
+	if err := os.Symlink(filepath.Join("clipboard.d", "x1c.gone00.sock"),
+		filepath.Join(sshDir, "clipboard.sock")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Reconcile(sshDir, ""); err != nil {
+		t.Fatal(err)
+	}
+	target, _ := os.Readlink(filepath.Join(sshDir, "clipboard.sock"))
+	if target != filepath.Join("clipboard.d", "x1c.new222.sock") {
+		t.Errorf("symlink -> %q, want clipboard.d/x1c.new222.sock", target)
+	}
+}
+
+func TestReconcileKeepsLiveLegacySocket(t *testing.T) {
+	// Mixed-version rollout (spec review C1): a LIVE regular-file
+	// clipboard.sock from the old scheme must be left untouched even when
+	// clipboard.d has live sockets.
+	sshDir := mkSSHDir(t)
+	liveSocketAt(t, filepath.Join(sshDir, "clipboard.sock"))
+	liveSocketAt(t, filepath.Join(sshDir, "clipboard.d", "x1c.aaa111.sock"))
+
+	res, err := Reconcile(sshDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Legacy {
+		t.Error("Legacy = false, want true")
+	}
+	info, err := os.Lstat(filepath.Join(sshDir, "clipboard.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("live legacy socket was replaced by a symlink")
+	}
+}
+
+func TestReconcileMigratesDeadLegacySocket(t *testing.T) {
+	sshDir := mkSSHDir(t)
+	staleSocketAt(t, filepath.Join(sshDir, "clipboard.sock"))
+	liveSocketAt(t, filepath.Join(sshDir, "clipboard.d", "x1c.aaa111.sock"))
+
+	res, err := Reconcile(sshDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Legacy {
+		t.Error("Legacy = true, want false (dead legacy replaced)")
+	}
+	target, err := os.Readlink(filepath.Join(sshDir, "clipboard.sock"))
+	if err != nil {
+		t.Fatalf("dead legacy not replaced by symlink: %v", err)
+	}
+	if target != filepath.Join("clipboard.d", "x1c.aaa111.sock") {
+		t.Errorf("symlink -> %q", target)
+	}
+}
+
+func TestReconcileLockBusy(t *testing.T) {
+	sshDir := mkSSHDir(t)
+	lockPath := filepath.Join(sshDir, "clipboard.d", ".lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+
+	start := time.Now()
+	_, err = reconcileWithLockTimeout(sshDir, "", 300*time.Millisecond)
+	if !errors.Is(err, ErrBusy) {
+		t.Errorf("err = %v, want ErrBusy", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Error("lock wait did not respect timeout")
 	}
 }
