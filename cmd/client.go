@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/mithro/clipboard-over-ssh/forward"
 	"github.com/mithro/clipboard-over-ssh/protocol"
 )
 
@@ -38,32 +40,20 @@ func RunClient(invocationName string, args []string) int {
 		return fallThrough(invocationName, args)
 	}
 
-	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		return fallThrough(invocationName, args)
-	}
+	usingDefault := os.Getenv("CLIPBOARD_SOCK") == ""
 
-	conn, err := net.Dial("unix", sockPath)
+	sshDir, err := defaultSSHDir()
 	if err != nil {
 		return fallThrough(invocationName, args)
 	}
-	defer conn.Close()
 
-	// Send request
-	if _, err := fmt.Fprintf(conn, "%s\n", req.target); err != nil {
-		fmt.Fprintf(os.Stderr, "clipboard-over-ssh: writing request: %v\n", err)
-		return 1
-	}
-
-	// Close write side so server sees EOF after the request line
-	if uc, ok := conn.(*net.UnixConn); ok {
-		uc.CloseWrite()
-	}
-
-	// Read response
-	resp, err := protocol.ReadResponse(conn)
+	resp, err := requestWithHeal(sshDir, sockPath, req.target, usingDefault)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "clipboard-over-ssh: reading response: %v\n", err)
-		return 1
+		fmt.Fprintf(os.Stderr,
+			"clipboard-over-ssh: no live clipboard forward (%v); falling back to real %s\n",
+			err, invocationName)
+		forward.Logf(sshDir, "shim", "fallthrough for %s: %v", invocationName, err)
+		return fallThrough(invocationName, args)
 	}
 
 	if !resp.OK {
@@ -88,8 +78,46 @@ func RunClient(invocationName string, args []string) int {
 	return 0
 }
 
+// requestDeadline bounds the whole paste attempt. An undead forward (half-
+// open after laptop suspend) accepts and then never answers; without a
+// deadline the old shim blocked forever.
+const requestDeadline = 5 * time.Second
+
+// request performs one clipboard request against sockPath.
+func request(sockPath, target string) (*protocol.Response, error) {
+	conn, err := net.DialTimeout("unix", sockPath, requestDeadline)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(requestDeadline))
+
+	if _, err := fmt.Fprintf(conn, "%s\n", target); err != nil {
+		return nil, fmt.Errorf("writing request: %w", err)
+	}
+	if uc, ok := conn.(*net.UnixConn); ok {
+		uc.CloseWrite()
+	}
+	return protocol.ReadResponse(conn)
+}
+
+// requestWithHeal tries once; on failure with the default socket path it
+// reconciles (symlink hop to any other live forward — no ssh involved) and
+// retries once.
+func requestWithHeal(sshDir, sockPath, target string, usingDefault bool) (*protocol.Response, error) {
+	resp, err := request(sockPath, target)
+	if err == nil || !usingDefault {
+		return resp, err
+	}
+	res, rerr := forward.Reconcile(sshDir, "")
+	if rerr != nil || (res.LiveName == "" && !res.Legacy) {
+		return nil, err
+	}
+	return request(sockPath, target)
+}
+
 type clientRequest struct {
-	target       string
+	target         string
 	filterX11Atoms bool // when true, filter TARGETS output to only MIME types (for wl-paste --list-types)
 }
 
