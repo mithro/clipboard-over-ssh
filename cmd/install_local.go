@@ -99,16 +99,31 @@ func RunInstallLocal() int {
 		}
 	}
 
-	// Print status
+	// The receiving side of forwards needs ~/.ssh/clipboard.d/ (most
+	// machines are both sides; cheap to always create).
+	if err := os.MkdirAll(filepath.Join(home, ".ssh", "clipboard.d"), 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "clipboard-over-ssh install-local: creating clipboard.d: %v\n", err)
+		return 1
+	}
+
 	fmt.Println("\nInstalled successfully. Socket is active.")
 	fmt.Println("\nAdd this to your ~/.ssh/config for remote hosts:")
 	fmt.Println()
 	fmt.Println("    Host <hostname-pattern>")
-	fmt.Println("        RemoteForward ${HOME}/.ssh/clipboard.sock ${HOME}/.ssh/clipboard-over-ssh.sock")
-	fmt.Println("        StreamLocalBindUnlink yes")
+	fmt.Println("        PermitLocalCommand yes")
+	// Held in a variable rather than passed as a literal: `go vet`'s printf
+	// checker flags Println literals containing %-sequences as a likely
+	// Printf/Println mix-up, even though these are literal shell %-escapes
+	// (%r %h %p), not Go format verbs.
+	localCommandLine := "        LocalCommand sh -c 'test -x ~/.local/bin/clipboard-over-ssh && exec ~/.local/bin/clipboard-over-ssh ensure-forward %r %h %p; true'"
+	fmt.Println(localCommandLine)
 	fmt.Println()
-	fmt.Println("${HOME} is expanded by SSH on the client side. This works when the")
-	fmt.Println("remote home directory path matches the local one (e.g. both /home/tim).")
+	fmt.Println("Each new connection forwards its own uniquely-named socket into")
+	fmt.Println("~/.ssh/clipboard.d/ on the remote; 'reconcile' points the")
+	fmt.Println("~/.ssh/clipboard.sock symlink at a live one. No RemoteForward or")
+	fmt.Println("StreamLocalBindUnlink config is needed (or wanted) any more.")
+	fmt.Println()
+	fmt.Println("Home directory paths must match on both ends (e.g. both /home/tim).")
 
 	return 0
 }

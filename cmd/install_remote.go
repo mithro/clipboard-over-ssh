@@ -25,6 +25,11 @@ func RunInstallRemote() int {
 		return 1
 	}
 
+	if err := os.MkdirAll(filepath.Join(home, ".ssh", "clipboard.d"), 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "clipboard-over-ssh install-remote: creating clipboard.d: %v\n", err)
+		return 1
+	}
+
 	// Determine our binary path
 	binPath, err := os.Executable()
 	if err != nil {

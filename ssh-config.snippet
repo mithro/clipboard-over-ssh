@@ -1,11 +1,14 @@
-# Clipboard-over-SSH forwarding.
+# clipboard-over-ssh: each new mux master forwards its own uniquely-named
+# socket into ~/.ssh/clipboard.d/ on the remote (LocalCommand below), and
+# `clipboard-over-ssh reconcile` maintains the ~/.ssh/clipboard.sock symlink
+# that the xclip/wl-paste shims dial.
 #
-# ${HOME} is expanded by SSH on the client side. This works when the
-# remote home directory path matches the local one (e.g. both /home/tim).
-# Both sockets live alongside SSH mux sockets under ~/.ssh/.
+# Do NOT add a RemoteForward for clipboard.sock or StreamLocalBindUnlink —
+# that is the old single-shared-socket scheme; mixing both re-creates the
+# clobber bug this design removed.
 #
-# StreamLocalBindUnlink removes stale sockets from previous sessions.
-
+# NOTE: ClearAllForwardings does NOT suppress LocalCommand-driven forwards.
+# Hosts that must never receive one need: PermitLocalCommand no
 Host *.example.com
-    RemoteForward ${HOME}/.ssh/clipboard.sock ${HOME}/.ssh/clipboard-over-ssh.sock
-    StreamLocalBindUnlink yes
+    PermitLocalCommand yes
+    LocalCommand sh -c 'test -x ~/.local/bin/clipboard-over-ssh && exec ~/.local/bin/clipboard-over-ssh ensure-forward %r %h %p; true'
