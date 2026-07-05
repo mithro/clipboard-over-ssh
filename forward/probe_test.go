@@ -107,3 +107,14 @@ func TestProbeMissingIsDead(t *testing.T) {
 		t.Errorf("Probe(missing) = %v, want Dead", got)
 	}
 }
+
+// TestStateZeroValueIsNotLive locks in the fail-closed property: an
+// accidentally-unset State (e.g. a zero-valued struct field never assigned
+// due to a bug) must not read as Live, since Live is treated as "safe to
+// adopt" by callers whose other outcome is unlinking files.
+func TestStateZeroValueIsNotLive(t *testing.T) {
+	var zero State
+	if zero == Live {
+		t.Errorf("zero value of State must not equal Live (fail-open risk); got %v", zero)
+	}
+}

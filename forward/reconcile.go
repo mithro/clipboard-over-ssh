@@ -112,6 +112,9 @@ func reconcileLocked(sshDir, adopt string) (Result, error) {
 
 	var live []sockInfo
 	for _, si := range infos {
+		// Only Live and Dead are handled; Undead (and the zero-valued
+		// stateUnknown, should it ever leak through) both fall through
+		// untouched here — skipped, same as Undead: not adopted, not GC'd.
 		switch si.state {
 		case Live:
 			live = append(live, si)

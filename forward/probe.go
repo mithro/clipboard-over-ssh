@@ -18,8 +18,14 @@ import (
 type State int
 
 const (
+	// stateUnknown is the zero value: an accidentally-unset State (e.g. a
+	// zero-valued struct field never assigned by a bug) reads as this, not
+	// as Live. The selection switch in reconcile.go only special-cases Live
+	// and Dead explicitly, so stateUnknown falls through like Undead —
+	// skipped: never adopted, never unlinked. Fail closed, not open.
+	stateUnknown State = iota
 	// Live: completed a TARGETS round trip — safe to adopt.
-	Live State = iota
+	Live
 	// Undead: accepts connections but never answers (half-open forward,
 	// e.g. after laptop suspend, until sshd reaps the session). Not
 	// adoptable, not collectable.
