@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/mithro/clipboard-over-ssh/forward"
 	"github.com/mithro/clipboard-over-ssh/protocol"
 )
 
@@ -27,43 +29,43 @@ func RunClient(invocationName string, args []string) int {
 	}
 
 	sockPath := os.Getenv("CLIPBOARD_SOCK")
-	if sockPath == "" {
-		// Default: check ~/.ssh/clipboard.sock (same path as SSH RemoteForward target)
+	usingDefault := sockPath == ""
+
+	// sshDir is only needed for two things: building the default socket
+	// path, and best-effort Logf on fallthrough. A custom $CLIPBOARD_SOCK
+	// never needs a home directory to dial, so it must not be resolved
+	// (or required) on that path.
+	var sshDir string
+	if usingDefault {
+		// Default: check ~/.ssh/clipboard.sock (same path as SSH RemoteForward
+		// target). This is the one home-dir resolution on the default path,
+		// reused for both sockPath and sshDir. If $HOME is unset (cron,
+		// stripped env) there is no default socket to try — fall through
+		// loudly, never silently.
 		home, err := os.UserHomeDir()
-		if err == nil {
-			sockPath = filepath.Join(home, ".ssh", "clipboard.sock")
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"clipboard-over-ssh: cannot determine home directory (%v); falling back to real %s\n",
+				err, invocationName)
+			return fallThrough(invocationName, args)
 		}
-	}
-	if sockPath == "" {
-		return fallThrough(invocationName, args)
+		sshDir = filepath.Join(home, ".ssh")
+		sockPath = filepath.Join(sshDir, "clipboard.sock")
+	} else {
+		// Best-effort only, for the Logf call below. If it fails, skip the
+		// Logf but still make the request against $CLIPBOARD_SOCK.
+		sshDir, _ = defaultSSHDir()
 	}
 
-	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		return fallThrough(invocationName, args)
-	}
-
-	conn, err := net.Dial("unix", sockPath)
+	resp, err := requestWithHeal(sshDir, sockPath, req.target, usingDefault)
 	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"clipboard-over-ssh: no live clipboard forward (%v); falling back to real %s\n",
+			err, invocationName)
+		if sshDir != "" {
+			forward.Logf(sshDir, "shim", "fallthrough for %s: %v", invocationName, err)
+		}
 		return fallThrough(invocationName, args)
-	}
-	defer conn.Close()
-
-	// Send request
-	if _, err := fmt.Fprintf(conn, "%s\n", req.target); err != nil {
-		fmt.Fprintf(os.Stderr, "clipboard-over-ssh: writing request: %v\n", err)
-		return 1
-	}
-
-	// Close write side so server sees EOF after the request line
-	if uc, ok := conn.(*net.UnixConn); ok {
-		uc.CloseWrite()
-	}
-
-	// Read response
-	resp, err := protocol.ReadResponse(conn)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "clipboard-over-ssh: reading response: %v\n", err)
-		return 1
 	}
 
 	if !resp.OK {
@@ -88,8 +90,46 @@ func RunClient(invocationName string, args []string) int {
 	return 0
 }
 
+// requestDeadline bounds the whole paste attempt. An undead forward (half-
+// open after laptop suspend) accepts and then never answers; without a
+// deadline the old shim blocked forever.
+const requestDeadline = 5 * time.Second
+
+// request performs one clipboard request against sockPath.
+func request(sockPath, target string) (*protocol.Response, error) {
+	conn, err := net.DialTimeout("unix", sockPath, requestDeadline)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(requestDeadline))
+
+	if _, err := fmt.Fprintf(conn, "%s\n", target); err != nil {
+		return nil, fmt.Errorf("writing request: %w", err)
+	}
+	if uc, ok := conn.(*net.UnixConn); ok {
+		uc.CloseWrite()
+	}
+	return protocol.ReadResponse(conn)
+}
+
+// requestWithHeal tries once; on failure with the default socket path it
+// reconciles (symlink hop to any other live forward — no ssh involved) and
+// retries once.
+func requestWithHeal(sshDir, sockPath, target string, usingDefault bool) (*protocol.Response, error) {
+	resp, err := request(sockPath, target)
+	if err == nil || !usingDefault {
+		return resp, err
+	}
+	res, rerr := forward.Reconcile(sshDir, "")
+	if rerr != nil || (res.LiveName == "" && !res.Legacy) {
+		return nil, err
+	}
+	return request(sockPath, target)
+}
+
 type clientRequest struct {
-	target       string
+	target         string
 	filterX11Atoms bool // when true, filter TARGETS output to only MIME types (for wl-paste --list-types)
 }
 
