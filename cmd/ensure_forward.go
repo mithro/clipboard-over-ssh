@@ -58,7 +58,12 @@ func (e *execRunner) startDetached(name string, args ...string) error {
 		return err
 	}
 	defer devnull.Close()
-	logf, err := os.OpenFile(filepath.Join(e.logDir, "clipboard-over-ssh.log"),
+	// The child's raw stderr goes to a SIDECAR log, not the main
+	// clipboard-over-ssh.log: the main log's format contract is one
+	// timestamped line per atomic O_APPEND write (forward.Logf), and ssh's
+	// stderr arrives in arbitrary-sized chunks that would interleave
+	// mid-line with Logf records from concurrent writers.
+	logf, err := os.OpenFile(filepath.Join(e.logDir, "clipboard-over-ssh.child.log"),
 		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		logf = devnull
